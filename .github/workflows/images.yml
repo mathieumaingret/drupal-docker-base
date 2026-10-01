@@ -1,0 +1,151 @@
+# Builds and publishes the docker-base images to ghcr.io.
+#
+# - Tag push vX.Y.Z: publishes <runtime>-X.Y.Z (immutable), <runtime>-X.Y,
+#   <runtime>-X and <runtime>.
+# - Weekly / manual: rebuilds the latest release on fresh base images (security
+#   patches) and refreshes the moving tags only, never the immutable one.
+#
+# Each platform builds on a native runner (no QEMU), then a manifest list
+# merges the per-platform digests.
+name: images
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      ref: ${{ steps.version.outputs.ref }}
+      version: ${{ steps.version.outputs.version }}
+      minor: ${{ steps.version.outputs.minor }}
+      major: ${{ steps.version.outputs.major }}
+      release: ${{ steps.version.outputs.release }}
+      registry: ${{ steps.version.outputs.registry }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            tag="$GITHUB_REF_NAME"; release=true
+          else
+            tag=$(git tag --list 'v*.*.*' --sort=-v:refname | head -n1); release=false
+          fi
+          if [ -z "$tag" ]; then echo "No release tag yet." >&2; exit 1; fi
+          version="${tag#v}"
+          {
+            echo "ref=$tag"
+            echo "version=$version"
+            echo "minor=${version%.*}"
+            echo "major=${version%%.*}"
+            echo "release=$release"
+            echo "registry=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - { name: drupal-php, context: images/php, arg: PHP_VERSION, runtime: "8.3" }
+          - { name: drupal-php, context: images/php, arg: PHP_VERSION, runtime: "8.4" }
+          - { name: drupal-php, context: images/php, arg: PHP_VERSION, runtime: "8.5" }
+          - { name: drupal-node, context: images/node, arg: NODE_VERSION, runtime: "22" }
+          - { name: drupal-node, context: images/node, arg: NODE_VERSION, runtime: "24" }
+        platform:
+          - { name: linux/amd64, arch: amd64, runner: ubuntu-24.04 }
+          - { name: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.platform.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image.context }}
+          platforms: ${{ matrix.platform.name }}
+          pull: true
+          build-args: ${{ matrix.image.arg }}=${{ matrix.image.runtime }}
+          # Links the ghcr.io package to this repository (visibility, Actions write access).
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          outputs: type=image,name=${{ needs.resolve.outputs.registry }}/${{ matrix.image.name }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.image.name }}-${{ matrix.image.runtime }}-${{ matrix.platform.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}-${{ matrix.image.runtime }}-${{ matrix.platform.arch }}
+      - name: Smoke test
+        run: |
+          image="${{ needs.resolve.outputs.registry }}/${{ matrix.image.name }}@${{ steps.build.outputs.digest }}"
+          docker run --rm -v "$PWD/${{ matrix.image.context }}/smoke.sh:/smoke.sh:ro" --entrypoint /smoke.sh "$image"
+      - name: Export digest
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "$RUNNER_TEMP/digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.image.name }}-${{ matrix.image.runtime }}-${{ matrix.platform.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: [resolve, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - { name: drupal-php, runtime: "8.3" }
+          - { name: drupal-php, runtime: "8.4" }
+          - { name: drupal-php, runtime: "8.5" }
+          - { name: drupal-node, runtime: "22" }
+          - { name: drupal-node, runtime: "24" }
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-${{ matrix.image.name }}-${{ matrix.image.runtime }}-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create manifest list
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          IMAGE: ${{ needs.resolve.outputs.registry }}/${{ matrix.image.name }}
+          RUNTIME: ${{ matrix.image.runtime }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          MINOR: ${{ needs.resolve.outputs.minor }}
+          MAJOR: ${{ needs.resolve.outputs.major }}
+          RELEASE: ${{ needs.resolve.outputs.release }}
+        run: |
+          tags=(-t "$IMAGE:$RUNTIME-$MINOR" -t "$IMAGE:$RUNTIME-$MAJOR" -t "$IMAGE:$RUNTIME")
+          if [ "$RELEASE" = "true" ]; then
+            tags+=(-t "$IMAGE:$RUNTIME-$VERSION")
+          fi
+          docker buildx imagetools create "${tags[@]}" $(printf "$IMAGE@sha256:%s " *)
+          docker buildx imagetools inspect "$IMAGE:$RUNTIME-$MINOR"

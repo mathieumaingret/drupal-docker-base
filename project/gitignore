@@ -1,0 +1,5 @@
+.env
+_dumps/
+storage/private/*
+storage/tmp/*
+docker/compose/local.yml

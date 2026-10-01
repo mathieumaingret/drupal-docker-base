@@ -1,0 +1,13 @@
+# Project-specific Compose changes, merged over docker/compose/base.yml.
+# Committed with the project; never touched by `make docker-update`.
+# Per-developer tweaks go to docker/compose/local.yml (git-ignored).
+#
+# Example — add Solr:
+#
+# services:
+#   solr:
+#     image: solr:9
+#     networks:
+#       - app-internal
+
+services: {}

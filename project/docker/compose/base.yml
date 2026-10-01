@@ -1,0 +1,184 @@
+# Managed by docker-base — overwritten by `make docker-update`, do not edit.
+# Project-specific changes go to docker/compose/project.yml.
+
+name: ${COMPOSE_PROJECT_NAME:?Set COMPOSE_PROJECT_NAME in .env}
+
+services:
+  app:
+    image: ${DOCKER_BASE_REGISTRY:-ghcr.io/mathieumaingret}/drupal-php:${PHP_VERSION:-8.4}-${DOCKER_BASE_VERSION:?Set DOCKER_BASE_VERSION in .env}
+    container_name: ${COMPOSE_PROJECT_NAME}-app
+    restart: unless-stopped
+    # Every project variable reaches the container ($_ENV / getenv());
+    # the environment block below only adds computed values and defaults.
+    env_file: .env
+    volumes:
+      - ./${APP_DIR:-.}:/var/www/html
+      # Host SSH agent (no private key copied): Composer private repos, Deployer.
+      - ${SSH_AUTH_SOCK_HOST:-/run/host-services/ssh-auth.sock}:/run/ssh-agent.sock
+      - composer-cache:/home/www-data/.composer/cache
+    environment:
+      APP_ENV: ${APP_ENV:-local}
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-drupal}
+      MYSQL_USER: ${MYSQL_USER:-drupal}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-drupal}
+      MYSQL_PREFIX: ${MYSQL_PREFIX:-}
+      REDIS_ENABLED: ${REDIS_ENABLED:-0}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      HASH_SALT: ${HASH_SALT:?Set HASH_SALT in .env (make init generates one)}
+      TRUSTED_HOST_PATTERNS: ${TRUSTED_HOST_PATTERNS:-^.+\.dev\.localhost$$}
+      DRUSH_OPTIONS_URI: https://${COMPOSE_PROJECT_NAME}.dev.localhost
+      DRUPAL_PRIVATE_PATH: ${DRUPAL_PRIVATE_PATH:-../storage/private/default}
+      DRUPAL_TMP_PATH: ${DRUPAL_TMP_PATH:-../storage/tmp/default}
+      DRUPAL_CONFIG_SYNC: ${DRUPAL_CONFIG_SYNC:-../config/sync}
+      SMTP_TRANSPORT: ${SMTP_TRANSPORT:-}
+      SSH_AUTH_SOCK: /run/ssh-agent.sock
+      XDEBUG_MODE: ${XDEBUG_MODE:-off}
+      XDEBUG_START_WITH_REQUEST: ${XDEBUG_START_WITH_REQUEST:-trigger}
+      # PhpStorm maps paths through a server named after the project.
+      PHP_IDE_CONFIG: serverName=${COMPOSE_PROJECT_NAME}
+      USER_ID: ${USER_ID:-1000}
+      GROUP_ID: ${GROUP_ID:-1000}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - app-internal
+      - traefik-public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}.rule=Host(`${COMPOSE_PROJECT_NAME}.dev.localhost`)"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}.entrypoints=web"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}.service=${COMPOSE_PROJECT_NAME}"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-secure.rule=Host(`${COMPOSE_PROJECT_NAME}.dev.localhost`)"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-secure.entrypoints=websecure"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-secure.tls=true"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-secure.service=${COMPOSE_PROJECT_NAME}"
+      - "traefik.http.services.${COMPOSE_PROJECT_NAME}.loadbalancer.server.port=80"
+      - "traefik.docker.network=traefik-public"
+
+  db:
+    image: mariadb:${MARIADB_VERSION:-11.8}
+    container_name: ${COMPOSE_PROJECT_NAME}-db
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: ${MYSQL_DATABASE:-drupal}
+      MARIADB_USER: ${MYSQL_USER:-drupal}
+      MARIADB_PASSWORD: ${MYSQL_PASSWORD:-drupal}
+      MARIADB_RANDOM_ROOT_PASSWORD: "yes"
+    # Drupal recommends these for InnoDB / utf8mb4 and large imports.
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+      - --max-allowed-packet=256M
+      - --transaction-isolation=READ-COMMITTED
+    volumes:
+      - db-data:/var/lib/mysql
+    ports:
+      - "127.0.0.1:${DB_HOST_PORT:-0}:3306"
+    networks:
+      - app-internal
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      start_period: 10s
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    container_name: ${COMPOSE_PROJECT_NAME}-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - app-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  node:
+    image: ${DOCKER_BASE_REGISTRY:-ghcr.io/mathieumaingret}/drupal-node:${NODE_VERSION:-22}-${DOCKER_BASE_VERSION}
+    container_name: ${COMPOSE_PROJECT_NAME}-node
+    env_file: .env
+    user: "${USER_ID:-1000}:${GROUP_ID:-1000}"
+    working_dir: /var/www/html
+    volumes:
+      - ./${APP_DIR:-.}:/var/www/html
+    ports:
+      - "127.0.0.1:${VITE_SERVER_PORT:-3014}:${VITE_SERVER_PORT:-3014}"
+    environment:
+      HOME: /tmp
+      npm_config_cache: /tmp/.npm
+      HOME_URL: https://${COMPOSE_PROJECT_NAME}.dev.localhost
+      VITE_SERVER_PORT: ${VITE_SERVER_PORT:-3014}
+      VITE_SERVER_HOST: ${VITE_SERVER_HOST:-localhost}
+    networks:
+      - app-internal
+    command: ["tail", "-f", "/dev/null"]
+
+  mailpit:
+    image: axllent/mailpit:${MAILPIT_VERSION:-v1.29.6}
+    container_name: ${COMPOSE_PROJECT_NAME}-mailpit
+    restart: unless-stopped
+    networks:
+      - app-internal
+      - traefik-public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-mailpit.rule=Host(`${COMPOSE_PROJECT_NAME}-mailpit.dev.localhost`)"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-mailpit.entrypoints=web"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-mailpit.service=${COMPOSE_PROJECT_NAME}-mailpit"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-mailpit-secure.rule=Host(`${COMPOSE_PROJECT_NAME}-mailpit.dev.localhost`)"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-mailpit-secure.entrypoints=websecure"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-mailpit-secure.tls=true"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-mailpit-secure.service=${COMPOSE_PROJECT_NAME}-mailpit"
+      - "traefik.http.services.${COMPOSE_PROJECT_NAME}-mailpit.loadbalancer.server.port=8025"
+      - "traefik.docker.network=traefik-public"
+
+  adminer:
+    image: adminer:5.4.2
+    container_name: ${COMPOSE_PROJECT_NAME}-adminer
+    restart: unless-stopped
+    profiles: ["tools"]
+    environment:
+      ADMINER_DEFAULT_SERVER: db
+      ADMINER_DESIGN: dracula
+    depends_on:
+      - db
+    networks:
+      - app-internal
+      - traefik-public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-adminer.rule=Host(`${COMPOSE_PROJECT_NAME}-adminer.dev.localhost`)"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-adminer.entrypoints=web"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-adminer.service=${COMPOSE_PROJECT_NAME}-adminer"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-adminer-secure.rule=Host(`${COMPOSE_PROJECT_NAME}-adminer.dev.localhost`)"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-adminer-secure.entrypoints=websecure"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-adminer-secure.tls=true"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-adminer-secure.service=${COMPOSE_PROJECT_NAME}-adminer"
+      - "traefik.http.services.${COMPOSE_PROJECT_NAME}-adminer.loadbalancer.server.port=8080"
+      - "traefik.docker.network=traefik-public"
+
+volumes:
+  db-data:
+    name: ${COMPOSE_PROJECT_NAME}-db-data
+  redis-data:
+    name: ${COMPOSE_PROJECT_NAME}-redis-data
+  composer-cache:
+    name: ${COMPOSE_PROJECT_NAME}-composer-cache
+
+networks:
+  app-internal:
+    name: ${COMPOSE_PROJECT_NAME}-internal
+    driver: bridge
+  traefik-public:
+    external: true

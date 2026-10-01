@@ -1,0 +1,5 @@
+# MariaDB >= 11.4 clients enforce TLS by default: without this, drush sql-cli /
+# sql-dump fail against a server older than 11.4 (no auto-generated cert), e.g.
+# when MARIADB_VERSION is pinned to the production 10.x.
+[client]
+skip-ssl
