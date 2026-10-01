@@ -61,8 +61,8 @@ make init      # creates .env (HASH_SALT, USER_ID, GROUP_ID) then stops: review 
 make init      # starts the stack, then `make install` (composer + the project's install:: steps)
 ```
 
-The installer also appends `.env`, `_dumps/`, `storage/*` and
-`docker/compose/local.yml` to the project `.gitignore`.
+The installer also appends `.env`, `_dumps/`, `storage/private/*`,
+`storage/tmp/*` and `docker/compose/local.yml` to the project `.gitignore`.
 
 Every variable of `.env` is passed to the `app` and `node` containers
 (`env_file`): a project adds its own settings (`SMTP_EMAIL_FROM`, API keys…)
@@ -124,17 +124,20 @@ versioning contract.
 
 Off by default. `make xdebug-on` sets `XDEBUG_MODE=debug` with
 `start_with_request=trigger`: use the browser extension; for Drush, open
-`make shell` and run `XDEBUG_SESSION=1 drush …`. In PhpStorm, create a server named after `COMPOSE_PROJECT_NAME`,
-mapping the project (or `APP_DIR`) to `/var/www/html`.
+`make shell` and run `XDEBUG_SESSION=1 drush …`. In PhpStorm, create a server
+named after `COMPOSE_PROJECT_NAME`, mapping the project (or `APP_DIR`) to
+`/var/www/html`.
 
 ## Mail
 
 Nothing leaves the stack: `mail()` goes through Mailpit's sendmail, core's
 Symfony mailer through `mailer_dsn`, and the `symfony_mailer` contrib module
-through the transport named by `SMTP_TRANSPORT` (1.x and 2.x; create a
-`mailpit` SMTP transport → `mailpit:1025` in the project config, or leave it
-empty). These overrides apply only when `settings.php` includes
-`settings.docker.php`.
+through the transport named by `SMTP_TRANSPORT` (1.x and 2.x): create a
+`mailpit` SMTP transport → `mailpit:1025` in the project config. If that
+transport does not exist, sending fails instead of falling back to production
+SMTP. Leave `SMTP_TRANSPORT` empty only when symfony_mailer is not installed:
+otherwise the imported default transport (possibly production SMTP) is used.
+These overrides apply only when `settings.php` includes `settings.docker.php`.
 
 ## SSH & Deployer
 
