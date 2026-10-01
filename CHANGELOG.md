@@ -8,11 +8,12 @@ Versioning contract (images are pulled per `<major>.<minor>`):
   `drupal.mk` / `base.yml`, existing `.env` keeps working.
 - **major** (x.0.0): breaking change; read the upgrade notes below.
 
-## Unreleased
+## 1.0.1
 
 - `settings.docker.php`: `SMTP_TRANSPORT` also overrides
   `mailer_transport.settings` (symfony_mailer 2.x).
 - README aligned with the code (install, Xdebug + Drush, env_file, Deployer).
+- README: symfony_mailer transport fallback and gitignore entries clarified.
 
 ## 1.0.0
 
