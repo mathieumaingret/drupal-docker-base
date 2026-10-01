@@ -8,7 +8,7 @@ gets it with `make pull` (patch) or `make docker-update` (minor).
 ## How it fits together
 
 ```
-docker-base (this repo)                      a Drupal project
+drupal-docker-base (this repo)               a Drupal project
 ├── images/php    ── CI ──► ghcr.io/mathieumaingret/drupal-php:8.4-1.2 ─┐
 ├── images/node   ── CI ──► ghcr.io/mathieumaingret/drupal-node:22-1.2 ─┤ pulled by
 ├── project/docker/compose/base.yml ─ install.sh ─► docker/compose/base.yml  (managed)
@@ -19,8 +19,8 @@ docker-base (this repo)                      a Drupal project
 
 | File in the project          | Owner       | Updated by                     |
 |------------------------------|-------------|--------------------------------|
-| `docker/compose/base.yml`    | docker-base | `make docker-update`           |
-| `docker/drupal.mk`           | docker-base | `make docker-update`           |
+| `docker/compose/base.yml`    | drupal-docker-base | `make docker-update`    |
+| `docker/drupal.mk`           | drupal-docker-base | `make docker-update`    |
 | `Makefile`                   | project     | you (`include docker/drupal.mk` + project targets) |
 | `docker/compose/project.yml` | project     | you (extra services/overrides, committed) |
 | `docker/compose/local.yml`   | developer   | you (git-ignored)              |
@@ -58,8 +58,15 @@ From the project root (prerequisite: a shared Traefik on the external
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mathieumaingret/drupal-docker-base/main/install.sh | bash
 make init      # creates .env (HASH_SALT, USER_ID, GROUP_ID) then stops: review it
-make init      # starts the stack, composer + npm install
+make init      # starts the stack, then `make install` (composer + the project's install:: steps)
 ```
+
+The installer also appends `.env`, `_dumps/`, `storage/*` and
+`docker/compose/local.yml` to the project `.gitignore`.
+
+Every variable of `.env` is passed to the `app` and `node` containers
+(`env_file`): a project adds its own settings (`SMTP_EMAIL_FROM`, API keys…)
+without touching docker-base.
 
 At the end of `settings.php` (the file only exists in the container, other
 environments skip it):
@@ -85,7 +92,7 @@ make drush status          # or make drush c='cr' when the arg is also a target
 make composer require drupal/foo
 make db-import dump.sql.gz / make db-export
 make xdebug-on / xdebug-off
-make dep deploy stage=draft
+make dep deploy stage=draft  # needs deployer/deployer in the project's require-dev
 make npm run build         # raw npm from the project root
 ```
 
@@ -116,16 +123,18 @@ versioning contract.
 ## Xdebug
 
 Off by default. `make xdebug-on` sets `XDEBUG_MODE=debug` with
-`start_with_request=trigger`: use the browser extension, or `XDEBUG_SESSION=1`
-for Drush. In PhpStorm, create a server named after `COMPOSE_PROJECT_NAME`,
+`start_with_request=trigger`: use the browser extension; for Drush, open
+`make shell` and run `XDEBUG_SESSION=1 drush …`. In PhpStorm, create a server named after `COMPOSE_PROJECT_NAME`,
 mapping the project (or `APP_DIR`) to `/var/www/html`.
 
 ## Mail
 
 Nothing leaves the stack: `mail()` goes through Mailpit's sendmail, core's
 Symfony mailer through `mailer_dsn`, and the `symfony_mailer` contrib module
-through the transport named by `SMTP_TRANSPORT` (create a `mailpit` SMTP
-transport → `mailpit:1025` in the project config, or leave it empty).
+through the transport named by `SMTP_TRANSPORT` (1.x and 2.x; create a
+`mailpit` SMTP transport → `mailpit:1025` in the project config, or leave it
+empty). These overrides apply only when `settings.php` includes
+`settings.docker.php`.
 
 ## SSH & Deployer
 

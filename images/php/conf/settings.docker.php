@@ -45,7 +45,8 @@ $settings['reverse_proxy_trusted_headers'] = \Symfony\Component\HttpFoundation\R
 // Mail goes to Mailpit: mail() through sendmail_path (php.ini), core Symfony
 // mailer (Drupal >= 10.2) through this DSN, and the symfony_mailer contrib
 // module through SMTP_TRANSPORT so an imported production transport is never
-// used locally.
+// used locally. The default transport moved from symfony_mailer.settings (1.x)
+// to mailer_transport.settings (2.x): both are set.
 $config['system.mail']['mailer_dsn'] = [
   'scheme' => 'smtp',
   'host' => getenv('SMTP_HOSTNAME'),
@@ -53,6 +54,7 @@ $config['system.mail']['mailer_dsn'] = [
 ];
 if (getenv('SMTP_TRANSPORT')) {
   $config['symfony_mailer.settings']['default_transport'] = getenv('SMTP_TRANSPORT');
+  $config['mailer_transport.settings']['default_transport'] = getenv('SMTP_TRANSPORT');
 }
 
 // Redis can only be wired once the redis module is enabled, otherwise
